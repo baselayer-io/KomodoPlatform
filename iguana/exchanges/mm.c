@@ -19,11 +19,13 @@
 //  Copyright © 2017 SuperNET. All rights reserved.
 //
 
+
 void PNACL_message(char *arg,...)
 {
     
 }
 #define FROM_MARKETMAKER
+
 #include <stdio.h>
 #include <stdint.h>
 #ifndef NATIVE_WINDOWS
@@ -31,7 +33,6 @@ void PNACL_message(char *arg,...)
 #else
 #include "../../crypto777/OS_portable.h"
 #endif // !_WIN_32
-
 
 #define MAX(a,b) ((a) > (b) ? (a) : (b))
 char *stats_JSON(void *ctx,char *myipaddr,int32_t pubsock,cJSON *argjson,char *remoteaddr,uint16_t port);
@@ -74,7 +75,7 @@ struct mmpending_order
     int32_t dir;
     uint32_t pending,completed,canceled,cancelstarted,reported;
     cJSON *errorjson;
-    char exchange[16],base[16],rel[16],orderid[64];
+    char exchange[16],base[65],rel[65],orderid[64];
 } *Pending_orders;
 int32_t Num_Pending;
 
@@ -415,7 +416,7 @@ void marketmaker_pendingupdate(char *exchange,char *base,char *rel)
 
 void marketmaker_pendinginit(char *exchange,char *base,char *rel)
 {
-    char *retstr,*orderid,*pairstr,relbase[64]; cJSON *retjson,*array,*item; int32_t i,j,n,dir; struct mmpending_order *ptr;
+    char *retstr,*orderid,*pairstr,relbase[65]; cJSON *retjson,*array,*item; int32_t i,j,n,dir; struct mmpending_order *ptr;
     sprintf(relbase,"%s-%s",rel,base);
     if ( (retstr= DEX_openorders(exchange)) != 0 )
     {
@@ -869,29 +870,32 @@ void LP_main(void *ptr)
         LP_profitratio += profitmargin;
         if ( (port= juint(argjson,"rpcport")) < 1000 )
             port = LP_RPCPORT;
-        LPinit(port,LP_RPCPORT+1,LP_RPCPORT+2,LP_RPCPORT+3,passphrase,jint(argjson,"client"),jstr(argjson,"userhome"),argjson);
+        LPinit(port,LP_RPCPORT+10,LP_RPCPORT+20,LP_RPCPORT+30,passphrase,jint(argjson,"client"),jstr(argjson,"userhome"),argjson);
     }
 }
 
 int main(int argc, const char * argv[])
 {
-    char dirname[512],*base,*rel,*name,*exchange,*apikey,*apisecret,*blocktrail,*retstr,*baseaddr,*reladdr,*passphrase; struct electrum_info *ep;
+    char dirname[512],*base,*rel,*name,*exchange,*apikey,*apisecret,*blocktrail,*retstr,*baseaddr,*reladdr,*passphrase; 
     double profitmargin,maxexposure,incrratio,start_rel,start_base,minask,maxbid,incr;
-    cJSON *retjson,*loginjson; int32_t i,already;
+    cJSON *retjson,*loginjson; int32_t i;
     OS_init();
-    if ( (0) )
+    if ( strstr(argv[0],"btc2kmd") != 0 && argv[1] != 0 )
     {
-        ep = LP_electrum_info(&already,"BTC","88.198.241.196",50001,IGUANA_MAXPACKETSIZE * 10); 
-        if ( ep != 0 && OS_thread_create(malloc(sizeof(pthread_t)),NULL,(void *)LP_dedicatedloop,(void *)ep) != 0 )
-        {
-            printf("error launching LP_dedicatedloop (%s:%u)\n",ep->ipaddr,ep->port);
-            exit(-1);
-        } else printf("launched.(%s:%u)\n",ep->ipaddr,ep->port);
-        electrum_test();
+        uint8_t addrtype,rmd160[20],rmd160b[20]; char coinaddr[64],coinaddr2[64];
+        bitcoin_addr2rmd160(0,&addrtype,rmd160,(char *)argv[1]);
+        bitcoin_address(coinaddr,0,60,rmd160,20);
+        bitcoin_addr2rmd160(0,&addrtype,rmd160b,coinaddr);
+        bitcoin_address(coinaddr2,0,0,rmd160b,20);
+        printf("(%s) -> %s -> %s\n",(char *)argv[1],coinaddr,coinaddr2);
+        if ( strcmp((char *)argv[1],coinaddr2) != 0 )
+            printf("ERROR\n");
+        exit(0);
     }
     sprintf(dirname,"%s",GLOBAL_DBDIR), OS_ensure_directory(dirname);
     sprintf(dirname,"%s/SWAPS",GLOBAL_DBDIR), OS_ensure_directory(dirname);
     sprintf(dirname,"%s/PRICES",GLOBAL_DBDIR), OS_ensure_directory(dirname);
+    sprintf(dirname,"%s/UNSPENTS",GLOBAL_DBDIR), OS_ensure_directory(dirname);
 #ifdef FROM_JS
     argc = 2;
     retjson = cJSON_Parse("{\"client\":1,\"passphrase\":\"test\"}");
@@ -899,6 +903,12 @@ int main(int argc, const char * argv[])
     LP_main(retjson);
     emscripten_set_main_loop(LP_fromjs_iter,1,0);
 #else
+    if ( argc == 1 )
+    {
+        LP_NXT_redeems();
+        sleep(3);
+        return(0);
+    }
     if ( argc > 1 && (retjson= cJSON_Parse(argv[1])) != 0 )
     {
         if ( (passphrase= jstr(retjson,"passphrase")) == 0 )
@@ -910,7 +920,7 @@ int main(int argc, const char * argv[])
         } //else printf("(%s) launched.(%s)\n",argv[1],passphrase);
         incr = 100.;
         while ( (1) )
-            sleep(1);
+            sleep(100000);
         profitmargin = jdouble(retjson,"profitmargin");
         minask = jdouble(retjson,"minask");
         maxbid = jdouble(retjson,"maxbid");
