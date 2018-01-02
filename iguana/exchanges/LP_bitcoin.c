@@ -2137,30 +2137,46 @@ int32_t base58encode_checkbuf(uint8_t taddr,uint8_t addrtype,uint8_t *data,int32
 
 int32_t bitcoin_wif2priv(uint8_t wiftaddr,uint8_t *addrtypep,bits256 *privkeyp,char *wifstr)
 {
-    int32_t offset,len = -1; bits256 hash; uint8_t buf[256];
+    int32_t offset,len = -1; bits256 hash; uint8_t buf[256],*ptr;
     offset = 1 + (wiftaddr != 0);
     memset(buf,0,sizeof(buf));
+    memset(privkeyp,0,sizeof(*privkeyp));
     if ( (len= bitcoin_base58decode(buf,wifstr)) >= 4 )
     {
-        // validate with trailing hash, then remove hash
-        if ( len < 38 )
+        if ( len >= 32+offset )
+            memcpy(privkeyp,buf+offset,32);
+        else
+        {
+            //printf("wif %s -> buf too short len.%d\n",wifstr,len);
+            return(-1);
+        }
+        ptr = buf;
+        /*if ( len < 38 )
+        {
+            memset(pbuf,0,sizeof(pbuf));
+            memcpy(pbuf,buf,len-4);
+            memcpy(&pbuf[34],&buf[len-4],4);
+            ptr = pbuf;
+            int32_t i; for (i=0; i<38; i++)
+                printf("%02x ",pbuf[i]);
+            printf("pbuf from %d\n",len);
             len = 38;
-        hash = bits256_doublesha256(0,buf,len - 4);
-        *addrtypep = (wiftaddr == 0) ? *buf : buf[1];
-        memcpy(privkeyp,buf+offset,32);
-        if ( (buf[len - 4]&0xff) == hash.bytes[31] && (buf[len - 3]&0xff) == hash.bytes[30] &&(buf[len - 2]&0xff) == hash.bytes[29] && (buf[len - 1]&0xff) == hash.bytes[28] )
+        }*/
+        hash = bits256_doublesha256(0,ptr,len - 4);
+        *addrtypep = (wiftaddr == 0) ? *ptr : ptr[1];
+        if ( (ptr[len - 4]&0xff) == hash.bytes[31] && (ptr[len - 3]&0xff) == hash.bytes[30] &&(ptr[len - 2]&0xff) == hash.bytes[29] && (ptr[len - 1]&0xff) == hash.bytes[28] )
         {
             //int32_t i; for (i=0; i<len; i++)
-            //    printf("%02x ",buf[i]);
-            //printf(" buf, hash.%02x %02x %02x %02x ",hash.bytes[28],hash.bytes[29],hash.bytes[30],hash.bytes[31]);
+            //    printf("%02x ",ptr[i]);
+            //printf(" ptr, hash.%02x %02x %02x %02x ",hash.bytes[28],hash.bytes[29],hash.bytes[30],hash.bytes[31]);
             //printf("wifstr.(%s) valid len.%d\n",wifstr,len);
             return(32);
         }
-        else
+        else if ( 0 ) // gets errors when len is 37
         {
             int32_t i; for (i=0; i<len; i++)
                 printf("%02x ",buf[i]);
-            printf(" buf, hash.%02x %02x %02x %02x\n",hash.bytes[28],hash.bytes[29],hash.bytes[30],hash.bytes[31]);
+            printf(" buf, hash.%02x %02x %02x %02x len.%d\n",hash.bytes[28],hash.bytes[29],hash.bytes[30],hash.bytes[31],len);
         }
     }
     return(-1);
@@ -2180,13 +2196,26 @@ int32_t bitcoin_wif2addr(void *ctx,uint8_t wiftaddr,uint8_t taddr,uint8_t pubtyp
 int32_t bitcoin_priv2wif(uint8_t wiftaddr,char *wifstr,bits256 privkey,uint8_t addrtype)
 {
     uint8_t data[128]; int32_t offset,len = 32;
-    memcpy(data+1,privkey.bytes,sizeof(privkey));
-    offset = 1 + (wiftaddr != 0);
+    if ( wiftaddr != 0 )
+    {
+        //data[0] = wiftaddr;
+        //data[1] = addrtype;
+        offset = 2;
+    }
+    else
+    {
+        //data[0] = addrtype;
+        offset = 1;
+    }
+    memcpy(data+offset,privkey.bytes,len);
     data[offset + len++] = 1;
     len = base58encode_checkbuf(wiftaddr,addrtype,data,len);
     if ( bitcoin_base58encode(wifstr,data,len) == 0 )
+    {
+        char str[65]; printf("error making wif from %s\n",bits256_str(str,privkey));
         return(-1);
-    if ( 1 )
+    }
+    if ( 0 )
     {
         uint8_t checktype; bits256 checkpriv; char str[65],str2[65];
         if ( bitcoin_wif2priv(wiftaddr,&checktype,&checkpriv,wifstr) == sizeof(bits256) )
@@ -2206,7 +2235,7 @@ int32_t bitcoin_priv2wiflong(uint8_t wiftaddr,char *wifstr,bits256 privkey,uint8
     len = base58encode_checkbuf(wiftaddr,addrtype,data,len);
     if ( bitcoin_base58encode(wifstr,data,len) == 0 )
         return(-1);
-    if ( 1 )
+    if ( 0 )
     {
         uint8_t checktype; bits256 checkpriv; char str[65],str2[65];
         if ( bitcoin_wif2priv(wiftaddr,&checktype,&checkpriv,wifstr) == sizeof(bits256) )
@@ -2577,39 +2606,6 @@ int32_t iguana_calcrmd160(uint8_t taddr,uint8_t pubtype,uint8_t p2shtype,char *a
     }
     return(vp->type);
 }
-
-/*uint32_t iguana_vinscriptparse(char *symbol,uint8_t taddr,uint8_t pubtype,uint8_t p2shtype,struct vin_info *vp,uint32_t *sigsizep,uint32_t *pubkeysizep,uint32_t *p2shsizep,uint32_t *userdatalenp,uint8_t *vinscript,int32_t scriptlen,int32_t zcash)
-{
-    uint32_t hashtype; uint8_t *userdata = 0;
-    *sigsizep = *pubkeysizep = *p2shsizep = *userdatalenp = 0;
-    if ( bitcoin_scriptget(symbol,taddr,pubtype,p2shtype,&hashtype,sigsizep,pubkeysizep,&userdata,userdatalenp,vp,vinscript,scriptlen,0,zcash) < 0 )
-    {
-        printf("iguana_vinscriptparse: error parsing vinscript?\n");
-        return(-1);
-    }
-    if ( userdata != 0 && *userdatalenp > 0 )
-        memcpy(vp->userdata,userdata,*userdatalenp);
-    if ( vp->type == IGUANA_SCRIPT_P2SH )
-    {
-        *p2shsizep = vp->p2shlen + 1 + (vp->p2shlen >= 0xfd)*2;
-        //printf("P2SHSIZE.%d\n",*p2shsizep);
-    }
-    return(hashtype);
-}*/
-
-/*char *iguana_scriptget(struct iguana_info *coin,char *scriptstr,char *asmstr,int32_t max,int32_t hdrsi,uint32_t unspentind,bits256 txid,int32_t vout,uint8_t *rmd160,int32_t type,uint8_t *pubkey33)
-{
-    int32_t scriptlen; uint8_t script[IGUANA_MAXSCRIPTSIZE]; struct vin_info V,*vp = &V;
-    memset(vp,0,sizeof(*vp));
-    scriptstr[0] = 0;
-    if ( asmstr != 0 )
-        asmstr[0] = 0;
-    if ( pubkey33 != 0 && bitcoin_pubkeylen(pubkey33) > 0 )
-        memcpy(vp->signers[0].pubkey,pubkey33,33);
-    scriptlen = iguana_scriptgen(coin,&vp->M,&vp->N,vp->coinaddr,script,asmstr,rmd160,type,(const struct vin_info *)vp,vout);
-    init_hexbytes_noT(scriptstr,script,scriptlen);
-    return(scriptstr);
-}*/
 
 cJSON *bitcoin_txscript(char *asmstr,char **vardata,int32_t numvars)
 {
@@ -3278,19 +3274,21 @@ int32_t iguana_rwmsgtx(char *symbol,uint8_t taddr,uint8_t pubtype,uint8_t p2shty
 
 bits256 bitcoin_sigtxid(char *symbol,uint8_t taddr,uint8_t pubtype,uint8_t p2shtype,uint8_t isPoS,int32_t height,uint8_t *serialized,int32_t maxlen,struct iguana_msgtx *msgtx,int32_t vini,uint8_t *spendscript,int32_t spendlen,uint64_t spendamount,uint32_t hashtype,char *vpnstr,int32_t suppress_pubkeys,int32_t zcash)
 {
-    int32_t i,len; bits256 sigtxid,txid,revsigtxid; struct iguana_msgtx dest;
+    int32_t i,len,sbtcflag = 0; bits256 sigtxid,txid,revsigtxid; struct iguana_msgtx dest;
     dest = *msgtx;
     dest.vins = calloc(dest.tx_in,sizeof(*dest.vins));
     dest.vouts = calloc(dest.tx_out,sizeof(*dest.vouts));
     memcpy(dest.vins,msgtx->vins,dest.tx_in * sizeof(*dest.vins));
     memcpy(dest.vouts,msgtx->vouts,dest.tx_out * sizeof(*dest.vouts));
     memset(sigtxid.bytes,0,sizeof(sigtxid));
+    if ( strcmp(symbol,"SBTC") == 0 )
+        sbtcflag = 1;
     if ( ((hashtype & ~SIGHASH_FORKID) & 0xff) != SIGHASH_ALL )
     {
         printf("currently only SIGHASH_ALL supported, not %d\n",hashtype);
         return(sigtxid);
     }
-    if ( (hashtype & SIGHASH_FORKID) == 0 )
+    if ( (hashtype & SIGHASH_FORKID) == 0 || sbtcflag != 0 )
     {
         for (i=0; i<dest.tx_in; i++)
         {
@@ -3320,6 +3318,11 @@ bits256 bitcoin_sigtxid(char *symbol,uint8_t taddr,uint8_t pubtype,uint8_t p2sht
                 hashtype |= (0x777 << 20);
 #endif
             len += iguana_rwnum(1,&serialized[len],sizeof(hashtype),&hashtype);
+            if ( sbtcflag != 0 )
+            {
+                memcpy(&serialized[len],"sbtc",4);
+                len += 4;
+            }
         }
         revsigtxid = bits256_doublesha256(0,serialized,len);
         for (i=0; i<sizeof(revsigtxid); i++)
@@ -3438,13 +3441,13 @@ bits256 bitcoin_sigtxid(char *symbol,uint8_t taddr,uint8_t pubtype,uint8_t p2sht
         len += iguana_rwbignum(1,&serialized[len],sizeof(outputhash),outputhash.bytes);
         len += iguana_rwnum(1,&serialized[len],sizeof(dest.lock_time),&dest.lock_time);
         len += iguana_rwnum(1,&serialized[len],sizeof(hashtype),&hashtype);
-        for (i=0; i<len; i++)
-            printf("%02x",serialized[i]);
+        //for (i=0; i<len; i++)
+        //    printf("%02x",serialized[i]);
         revsigtxid = bits256_doublesha256(0,serialized,len);
-        printf(" B path version.%08x spendamount %.8f locktime %u hashtype %08x %s\n",dest.version,dstr(spendamount),dest.lock_time,hashtype,bits256_str(str,revsigtxid));
-        //for (i=0; i<sizeof(revsigtxid); i++)
-        //    sigtxid.bytes[31-i] = revsigtxid.bytes[i];
-        sigtxid = revsigtxid;
+        //printf(" B path version.%08x spendamount %.8f locktime %u hashtype %08x %s\n",dest.version,dstr(spendamount),dest.lock_time,hashtype,bits256_str(str,revsigtxid));
+        for (i=0; i<sizeof(revsigtxid); i++)
+            sigtxid.bytes[31-i] = revsigtxid.bytes[i];
+        //sigtxid = revsigtxid;
     }
     //char str[65]; printf("SIGTXID.(%s) numvouts.%d\n",bits256_str(str,sigtxid),dest.tx_out);
     free(dest.vins);
@@ -3489,6 +3492,8 @@ uint32_t LP_sighash(char *symbol,int32_t zcash)
         sighash |= SIGHASH_FORKID;
         sighash |= (LP_IS_BITCOINGOLD << 8);
     }
+    else if ( strcmp(symbol,"SBTC") == 0 )
+        sighash |= SIGHASH_FORKID;
     return(sighash);
 }
 
