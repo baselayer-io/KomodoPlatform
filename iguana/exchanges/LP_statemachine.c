@@ -1,6 +1,6 @@
 
 /******************************************************************************
- * Copyright © 2014-2017 The SuperNET Developers.                             *
+ * Copyright © 2014-2018 The SuperNET Developers.                             *
  *                                                                            *
  * See the AUTHORS, DEVELOPER-AGREEMENT and LICENSE files at                  *
  * the top-level directory of this distribution for the individual copyright  *
@@ -2491,7 +2491,7 @@ void basilisk_swaploop(void *_utxo)
 {
     uint8_t *data; uint32_t expiration,savestatebits=0,saveotherbits=0; uint32_t channel; int32_t iters,retval=0,j,datalen,maxlen; struct basilisk_swap *swap; struct LP_utxoinfo *utxo = _utxo;
     swap = utxo->swap;
-    fprintf(stderr,"start swap iambob.%d\n",swap->I.iambob);
+    //fprintf(stderr,"start swap iambob.%d\n",swap->I.iambob);
     maxlen = 1024*1024 + sizeof(*swap);
     data = malloc(maxlen);
     expiration = (uint32_t)time(NULL) + 300;
@@ -3645,7 +3645,7 @@ if ( LP_pricevalid(price) > 0 )
     {
         LP_query(ctx,myipaddr,mypubsock,"connect",qp);
         //price = LP_pricecache(qp,qp->srccoin,qp->destcoin,qp->txid,qp->vout);
-        LP_requestinit(&qp->R,qp->srchash,qp->desthash,qp->srccoin,qp->satoshis-2*qp->txfee,qp->destcoin,qp->destsatoshis-2*qp->desttxfee,qp->timestamp,qp->quotetime,DEXselector);
+        LP_requestinit(&qp->R,qp->srchash,qp->desthash,qp->srccoin,qp->satoshis-2*qp->txfee,qp->destcoin,qp->destsatoshis-2*qp->desttxfee,qp->timestamp,qp->quotetime,DEXselector,qp->fill,qp->gtc);
         while ( time(NULL) < expiration )
         {
             if ( aliceutxo->S.swap != 0 )
