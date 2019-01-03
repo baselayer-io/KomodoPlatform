@@ -1,5 +1,5 @@
 /******************************************************************************
- * Copyright © 2014-2017 The SuperNET Developers.                             *
+ * Copyright © 2014-2018 The SuperNET Developers.                             *
  *                                                                            *
  * See the AUTHORS, DEVELOPER-AGREEMENT and LICENSE files at                  *
  * the top-level directory of this distribution for the individual copyright  *
@@ -877,7 +877,7 @@ void *OS_loadfile(char *fname,char **bufp,long *lenp,long *allocsizep)
         {
             fclose(fp);
             *lenp = 0;
-            printf("OS_loadfile null size.(%s)\n",fname);
+            //printf("OS_loadfile null size.(%s)\n",fname);
             return(0);
         }
         if ( filesize > buflen-1 )

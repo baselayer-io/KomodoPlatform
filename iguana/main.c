@@ -1,5 +1,5 @@
 /******************************************************************************
- * Copyright © 2014-2017 The SuperNET Developers.                             *
+ * Copyright © 2014-2018 The SuperNET Developers.                             *
  *                                                                            *
  * See the AUTHORS, DEVELOPER-AGREEMENT and LICENSE files at                  *
  * the top-level directory of this distribution for the individual copyright  *
@@ -891,7 +891,7 @@ uint8_t *SuperNET_ciphercalc(void **ptrp,int32_t *cipherlenp,bits256 *privkeyp,b
 cJSON *SuperNET_rosettajson(struct supernet_info *myinfo,bits256 privkey,int32_t showprivs)
 {
     uint8_t rmd160[20],pub[33]; uint64_t nxt64bits; bits256 pubkey;
-    char str2[41],wifbuf[64],pbuf[65],addr[64],str[128],coinwif[16]; cJSON *retjson; struct iguana_info *coin,*tmp;
+    char str2[41],wifbuf[64],pbuf[65],addr[64],str[128],coinwif[16],*paddr = 0; cJSON *retjson; struct iguana_info *coin,*tmp;
     pubkey = acct777_pubkey(privkey);
     nxt64bits = acct777_nxt64bits(pubkey);
     retjson = cJSON_CreateObject();
@@ -910,7 +910,12 @@ cJSON *SuperNET_rosettajson(struct supernet_info *myinfo,bits256 privkey,int32_t
     {
         if ( coin != 0 && coin->symbol[0] != 0 )
         {
-            if ( bitcoin_address(addr,coin->chain->pubtype,pub,33) != 0 )
+			if (strcmp(coin->chain->symbol, "HUSH") == 0)
+				paddr = bitcoin_address_ex(coin->chain->symbol, addr, 0x1c, coin->chain->pubtype, pub, 33);
+			else
+				paddr = bitcoin_address(addr, coin->chain->pubtype, pub, 33);
+
+            if ( paddr != 0 )
             {
                 jaddstr(retjson,coin->symbol,addr);
                 sprintf(coinwif,"%swif",coin->symbol);
@@ -2157,9 +2162,11 @@ void komodo_REVS_merge(char *str,char *str2)
     getchar();
 }
 
+int32_t komodo_initjson(char *fname);
+
 void iguana_main(void *arg)
 {
-    int32_t usessl = 0,ismainnet = 1, do_OStests = 0; struct supernet_info *myinfo;
+    int32_t usessl = 0,ismainnet = 1, do_OStests = 0; struct supernet_info *myinfo; char *elected = "elected";
     if ( (IGUANA_BIGENDIAN= iguana_isbigendian()) > 0 )
         printf("BIGENDIAN\n");
     else if ( IGUANA_BIGENDIAN == 0 )
@@ -2192,24 +2199,46 @@ void iguana_main(void *arg)
     iguana_Qinit();
     libgfshare_init(myinfo,myinfo->logs,myinfo->exps);
     myinfo->dpowsock = myinfo->dexsock = myinfo->pubsock = myinfo->subsock = myinfo->reqsock = myinfo->repsock = -1;
-    dex_init(myinfo);
     myinfo->psockport = 30000;
     if ( arg != 0 )
     {
         if ( strcmp((char *)arg,"OStests") == 0 )
             do_OStests = 1;
-        else if ( strcmp((char *)arg,"notary") == 0 )
+        else if ( strcmp((char *)arg,"stats") == 0 )
         {
-            myinfo->rpcport = IGUANA_NOTARYPORT;
-            myinfo->IAMNOTARY = 1;
-            myinfo->DEXEXPLORER = 1;
+            void iguana_notarystats(int32_t totals[64],int32_t dispflag);
+            int32_t totals[64];
+            memset(totals,0,sizeof(totals));
+            iguana_notarystats(totals,1);
+            exit(0);
         }
         else if ( strncmp((char *)arg,"-port=",6) == 0 )
         {
             myinfo->rpcport = atoi(&((char *)arg)[6]);
             printf("OVERRIDE IGUANA port <- %u\n",myinfo->rpcport);
         }
+        else if ( strncmp((char *)arg,"notary",strlen("notary")) == 0 ) // must be second to last
+        {
+            if ( strcmp((char *)arg,"notary_nosplit") == 0 )
+                myinfo->nosplit = 1;
+            myinfo->rpcport = IGUANA_NOTARYPORT;
+            myinfo->IAMNOTARY = 1;
+            myinfo->DEXEXPLORER = 0;//1; disable as SPV is used now
+        }
+        else
+        {
+            myinfo->rpcport = IGUANA_NOTARYPORT;
+            myinfo->IAMNOTARY = 1;
+            myinfo->DEXEXPLORER = 0;//1; disable as SPV is used now
+            elected = (char *)arg;
+        }
     }
+    if ( komodo_initjson(elected) < 0 )
+    {
+        printf("didnt find any elected notaries JSON in (%s)\n",elected);
+        exit(-1);
+    }
+    dex_init(myinfo);
 #ifdef IGUANA_OSTESTS
     do_OStests = 1;
 #endif
@@ -2223,6 +2252,7 @@ void iguana_main(void *arg)
     strcpy(myinfo->rpcsymbol,"BTCD");
     iguana_urlinit(myinfo,ismainnet,usessl);
     portable_mutex_init(&myinfo->pending_mutex);
+    portable_mutex_init(&myinfo->MoM_mutex);
     portable_mutex_init(&myinfo->dpowmutex);
     portable_mutex_init(&myinfo->notarymutex);
     portable_mutex_init(&myinfo->psockmutex);
@@ -2250,33 +2280,17 @@ void iguana_main(void *arg)
 #ifdef __APPLE__
             iguana_appletests(myinfo);
 #endif
-            char *retstr;
+            /*char *retstr;
             if ( (retstr= _dex_getnotaries(myinfo,"KMD")) != 0 )
             {
                 printf("INITIAL NOTARIES.(%s)\n",retstr);
                 free(retstr);
-            }
+            }*/
         }
     }
     else
     {
         basilisks_init(myinfo);
-    }
-    if ( (0) )
-    {
-        char *jsonstr = "[\"03b7621b44118017a16043f19b30cc8a4cfe068ac4e42417bae16ba460c80f3828\", \"02ebfc784a4ba768aad88d44d1045d240d47b26e248cafaf1c5169a42d7a61d344\", \"03750cf30d739cd7632f77c1c02812dd7a7181628b0558058d4755838117e05339\", \"0394f3529d2e8cc69ffa7a2b55f3761e7be978fa1896ef4c55dc9c275e77e5bf5e\", \"0243c1eeb3777af47187d542e5f8c84f0ac4b05cf5a7ad77faa8cb6d2d56db7823\", \"02bb298844175640a34e908ffdfa2839f77aba3d5edadefee16beb107826e00063\", \"02fa88e549b4b871498f892e527a5d57287916809f8cc3163f641d71c535e8df5a\", \"032f799e370f06476793a122fcd623db7804898fe5aef5572095cfee6353df34bf\", \"02c06fe5401faff4442ef87b7d1b56c2e5a214166615f9a2f2030c71b0cb067ae8\", \"038ac67ca49a8169bcc5de83fe020071095a2c3b2bc4d1c17386977329758956d5\"]";
-        
-        int32_t i,n; char coinaddr[64]; uint8_t pubkey33[33]; double val = 0.1; cJSON *array;
-        if ( (array= cJSON_Parse(jsonstr)) != 0 )
-        {
-            n = cJSON_GetArraySize(array);
-            for (i=0; i<n; i++)
-            {
-                decode_hex(pubkey33,33,jstri(array,i));
-                bitcoin_address(coinaddr,60,pubkey33,33);
-                printf("./komodo-cli -ac_name=REVS sendtoaddress %s %f\n",coinaddr,val);
-            }
-        } else printf("couldnt parse.(%s)\n",jsonstr);
     }
     iguana_launchdaemons(myinfo);
 }
