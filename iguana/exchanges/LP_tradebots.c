@@ -1,6 +1,6 @@
 
 /******************************************************************************
- * Copyright © 2014-2017 The SuperNET Developers.                             *
+ * Copyright © 2014-2018 The SuperNET Developers.                             *
  *                                                                            *
  * See the AUTHORS, DEVELOPER-AGREEMENT and LICENSE files at                  *
  * the top-level directory of this distribution for the individual copyright  *
@@ -52,14 +52,14 @@ void LP_tradebot_pauseall()
 void LP_tradebot_updatestats(struct LP_tradebot *bot,struct LP_tradebot_trade *tp)
 {
     char *swapstr,*status; int32_t flag; cJSON *swapjson;
-    if ( (swapstr= basilisk_swapentry(tp->requestid,tp->quoteid,1)) != 0 )
+    if ( (swapstr= basilisk_swapentry(0,tp->requestid,tp->quoteid,1)) != 0 )
     {
         flag = 0;
         if ( (swapjson= cJSON_Parse(swapstr)) != 0 )
         {
             tp->basevol = dstr(j64bits(swapjson,"satoshis"));
             tp->relvol = dstr(j64bits(swapjson,"destsatoshis"));
-            tp->aliceid = j64bits(swapjson,"aliceid");
+            tp->aliceid = (uint64_t)juint(swapjson,"aliceid");
             if ( (status= jstr(swapjson,"status")) != 0 )
             {
                 if ( strcmp(status,"finished") == 0 )
@@ -137,7 +137,7 @@ cJSON *LP_tradebot_tradejson(struct LP_tradebot_trade *tp,int32_t dispflag)
         jaddnum(item,"quoteid",tp->quoteid);
     } else jaddnum(item,"tradeid",tp->tradeid);
     if ( tp->aliceid != 0 )
-        jadd64bits(item,"aliceid",tp->aliceid);
+        jaddnum(item,"aliceid",tp->aliceid);
     if ( tp->basevol > SMALLVAL && tp->relvol > SMALLVAL )
     {
         if ( dispflag > 0 )
@@ -280,7 +280,7 @@ struct LP_tradebot_trade *LP_tradebot_pending(struct LP_tradebot *bot,cJSON *pen
     tp->dispdir = bot->dispdir;
     strcpy(tp->base,bot->base);
     strcpy(tp->rel,bot->rel);
-    tp->aliceid = j64bits(pending,"aliceid");
+    tp->aliceid = (uint64_t)juint(pending,"aliceid");
     tp->basevol = jdouble(pending,"basevalue");
     tp->relvol = jdouble(pending,"relvalue");
     printf("tradebot pending basevol %.8f relvol %.8f\n",tp->basevol,tp->relvol);
@@ -322,7 +322,7 @@ void LP_tradebot_timeslice(void *ctx,struct LP_tradebot *bot)
     LP_tradebot_calcstats(bot);
     if ( bot->dead == 0 && bot->pause == 0 && bot->userpause == 0 && bot->numtrades < sizeof(bot->trades)/sizeof(*bot->trades) )
     {
-        if ( (liststr= LP_recent_swaps(0)) != 0 )
+        if ( (liststr= LP_recent_swaps(0,0)) != 0 )
         {
             if ( (retjson= cJSON_Parse(liststr)) != 0 )
             {
@@ -338,7 +338,7 @@ void LP_tradebot_timeslice(void *ctx,struct LP_tradebot *bot)
                     {
                         if ( remaining < 0.001 )
                             break;
-                        if ( (retstr= LP_autobuy(ctx,LP_myipaddr,LP_mypubsock,bot->base,bot->rel,bot->maxprice,remaining/i,0,0,G.gui,0,destpubkey,tradeid)) != 0 )
+                        if ( (retstr= LP_autobuy(ctx,0,LP_myipaddr,LP_mypubsock,bot->base,bot->rel,bot->maxprice,remaining/i,0,0,G.gui,0,destpubkey,tradeid,0,0,0)) != 0 )
                         {
                             if ( (retjson2= cJSON_Parse(retstr)) != 0 )
                             {

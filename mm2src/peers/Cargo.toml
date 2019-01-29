@@ -1,0 +1,34 @@
+[package]
+# AG: I wanted the "p2p" name for this crate but it was taken by https://crates.io/crates/p2p which we might even end up using.
+name = "peers"
+version = "0.1.0"
+edition = "2018"
+
+[lib]
+name = "peers"
+path = "peers.rs"
+doctest = false
+
+[dependencies]
+arrayref = "0.3"
+byteorder = "1.2"
+common = { path = "../common" }
+crc = "1.8"
+crossbeam = "0.6"
+dirs = "1"
+either = "1.5"
+fomat-macros = "0.2"
+futures = "0.1"
+gstuff = "0.5"
+hashbrown = {version = "0.1.8", features = ["serde", "nightly"]}
+itertools = "0.7"
+lazy_static = "1.2"
+libc = "0.2"
+rand = "0.6"
+serde = "1.0"
+serde_derive = "1.0"
+serde_json = "1.0"
+serde_bencode = "0.2"
+serde_bytes = "0.10"
+unwrap = "1.2"
+#zstd-safe = "1.4"

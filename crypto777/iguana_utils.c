@@ -1,5 +1,5 @@
 /******************************************************************************
- * Copyright © 2014-2017 The SuperNET Developers.                             *
+ * Copyright © 2014-2018 The SuperNET Developers.                             *
  *                                                                            *
  * See the AUTHORS, DEVELOPER-AGREEMENT and LICENSE files at                  *
  * the top-level directory of this distribution for the individual copyright  *
@@ -12,6 +12,8 @@
  * Removal or modification of this copyright notice is prohibited.            *
  *                                                                            *
  ******************************************************************************/
+
+// NB: We have some methods here that aren't used in the MarketMaker.
 
 #include "../iguana/iguana777.h"
 
@@ -259,16 +261,6 @@ int32_t TerminateQ_queued; queue_t TerminateQ;
     }
 }*/
 
-
-int32_t iguana_numthreads(struct iguana_info *coin,int32_t mask)
-{
-    int32_t i,sum = 0;
-    for (i=0; i<8; i++)
-        if ( ((1 << i) & mask) != 0 )
-            sum += (coin->Launched[i] - coin->Terminated[i]);
-    return(sum);
-}
-
 void iguana_launcher(void *ptr)
 {
     struct iguana_thread *t = ptr; //struct iguana_info *coin;
@@ -288,29 +280,6 @@ void iguana_terminate(struct iguana_thread *t)
         printf("error.%d terminating t.%p thread.%s\n",retval,t,t->name);
 #endif
     myfree(t,sizeof(*t));
-}
-
-struct iguana_thread *iguana_launch(struct iguana_info *coin,char *name,iguana_func funcp,void *arg,uint8_t type)
-{
-    int32_t retval; struct iguana_thread *t;
-    t = mycalloc('Z',1,sizeof(*t));
-    strcpy(t->name,name);
-    t->coin = coin;
-    t->funcp = funcp;
-    t->arg = arg;
-    t->type = (type % (sizeof(coin->Terminated)/sizeof(*coin->Terminated)));
-    if ( coin != 0 )
-        coin->Launched[t->type]++;
-    retval = OS_thread_create(&t->handle,NULL,(void *)iguana_launcher,(void *)t);
-    if ( retval != 0 )
-        printf("error launching %s retval.%d errno.%d\n",t->name,retval,errno);
-    while ( (t= queue_dequeue(&TerminateQ)) != 0 )
-    {
-        if ( (rand() % 100000) == 0 && coin != 0 )
-            printf("terminated.%d launched.%d terminate.%p\n",coin->Terminated[t->type],coin->Launched[t->type],t);
-        iguana_terminate(t);
-    }
-    return(t);
 }
 
 char hexbyte(int32_t c)
@@ -557,7 +526,7 @@ int _increasing_uint64(const void *a,const void *b)
 #undef uint64_b
 }
 
-static int _decreasing_uint64(const void *a,const void *b)
+int _decreasing_uint64(const void *a,const void *b)
 {
 #define uint64_a (*(uint64_t *)a)
 #define uint64_b (*(uint64_t *)b)
@@ -570,7 +539,7 @@ static int _decreasing_uint64(const void *a,const void *b)
 #undef uint64_b
 }
 
-static int _decreasing_uint32(const void *a,const void *b)
+int _decreasing_uint32(const void *a,const void *b)
 {
 #define uint32_a (*(uint32_t *)a)
 #define uint32_b (*(uint32_t *)b)
@@ -760,118 +729,6 @@ void reverse_hexstr(char *str)
     rev[n] = 0;
     strcpy(str,rev);
     free(rev);
-}
-
-int32_t nn_base64_decode (const char *in, size_t in_len,uint8_t *out, size_t out_len)
-{
-    uint32_t ii,io,rem,v; uint8_t ch;
-    //  Unrolled lookup of ASCII code points. 0xFF represents a non-base64 valid character.
-    const uint8_t DECODEMAP [256] = {
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        0xFF, 0xFF, 0xFF, 0x3E, 0xFF, 0xFF, 0xFF, 0x3F,
-        0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x3B,
-        0x3C, 0x3D, 0xFF, 0xFF, 0xFF, 0x3E, 0xFF, 0xFF,
-        0xFF, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
-        0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
-        0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16,
-        0x17, 0x18, 0x19, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        0xFF, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20,
-        0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
-        0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30,
-        0x31, 0x32, 0x33, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-    
-    for (io = 0, ii = 0, v = 0, rem = 0; ii < in_len; ii++) {
-        if (isspace ((uint32_t)in [ii]))
-            continue;
-        
-        if (in [ii] == '=')
-            break;
-        
-        ch = DECODEMAP [(uint32_t)in [ii]];
-        
-        // Discard invalid characters as per RFC 2045.
-        if (ch == 0xFF)
-            break;
-        
-        v = (v << 6) | ch;
-        rem += 6;
-        
-        if (rem >= 8) {
-            rem -= 8;
-            if (io >= out_len)
-                return -ENOBUFS;
-            out [io++] = (v >> rem) & 255;
-        }
-    }
-    if (rem >= 8) {
-        rem -= 8;
-        if (io >= out_len)
-            return -ENOBUFS;
-        out [io++] = (v >> rem) & 255;
-    }
-    return io;
-}
-
-int32_t nn_base64_encode (const uint8_t *in, size_t in_len,char *out, size_t out_len)
-{
-    uint32_t ii,io,rem,v; uint8_t ch;
-    const uint8_t ENCODEMAP [64] =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "abcdefghijklmnopqrstuvwxyz"
-    "0123456789+/";
-    
-    for (io = 0, ii = 0, v = 0, rem = 0; ii < in_len; ii++) {
-        ch = in [ii];
-        v = (v << 8) | ch;
-        rem += 8;
-        while (rem >= 6) {
-            rem -= 6;
-            if (io >= out_len)
-                return -ENOBUFS;
-            out [io++] = ENCODEMAP [(v >> rem) & 63];
-        }
-    }
-    
-    if (rem) {
-        v <<= (6 - rem);
-        if (io >= out_len)
-            return -ENOBUFS;
-        out [io++] = ENCODEMAP [v & 63];
-    }
-    
-    //  Pad to a multiple of 3
-    while (io & 3) {
-        if (io >= out_len)
-            return -ENOBUFS;
-        out [io++] = '=';
-    }
-    
-    if (io >= out_len)
-        return -ENOBUFS;
-    
-    out [io] = '\0';
-    
-    return io;
 }
 
 /*
@@ -1144,13 +1001,6 @@ void calc_rmd160_sha256(uint8_t rmd160[20],uint8_t *data,int32_t datalen)
     calc_rmd160(0,rmd160,hash.bytes,sizeof(hash));
 }
 
-char *cmc_ticker(char *base)
-{
-    char url[512];
-    sprintf(url,"https://api.coinmarketcap.com/v1/ticker/%s/",base);
-    return(issue_curl(url));
-}
-
 char *bittrex_orderbook(char *base,char *rel,int32_t maxdepth)
 {
     char market[64],url[512];
@@ -1261,7 +1111,8 @@ double get_theoretical(double *avebidp,double *aveaskp,double *highbidp,double *
     static int32_t counter;
     char *cmcstr; cJSON *cmcjson,*item; double weighted,theoretical = 0.;
     *avebidp = *aveaskp = *highbidp = *lowaskp = *CMC_averagep = 0.;
-    if ( (cmcstr= cmc_ticker(name)) != 0 )
+    //TODO//if ( (cmcstr= cmc_ticker(name)) != 0 )
+    if ((cmcstr = 0) != 0)
     {
         if ( (cmcjson= cJSON_Parse(cmcstr)) != 0 )
         {
@@ -1285,3 +1136,40 @@ double get_theoretical(double *avebidp,double *aveaskp,double *highbidp,double *
     return(theoretical);
 }
 
+bits256 bits256_calctxid(char *symbol,uint8_t *serialized,int32_t len)
+{
+    bits256 txid,revtxid; int32_t i;
+    memset(txid.bytes,0,sizeof(txid));
+    if ( strcmp(symbol,"GRS") != 0 && strcmp(symbol,"SMART") != 0 )
+        txid = bits256_doublesha256(0,serialized,len);
+    else
+    {
+        vcalc_sha256(0,revtxid.bytes,serialized,len);
+        for (i=0; i<32; i++)
+            txid.bytes[i] = revtxid.bytes[31 - i];
+    }
+    return(txid);
+}
+
+bits256 iguana_merkle(char *symbol,bits256 *tree,int32_t txn_count)
+{
+    int32_t i,n=0,prev; uint8_t serialized[sizeof(bits256) * 2];
+    if ( txn_count == 1 )
+        return(tree[0]);
+    prev = 0;
+    while ( txn_count > 1 )
+    {
+        if ( (txn_count & 1) != 0 )
+            tree[prev + txn_count] = tree[prev + txn_count-1], txn_count++;
+        n += txn_count;
+        for (i=0; i<txn_count; i+=2)
+        {
+            iguana_rwbignum(1,serialized,sizeof(*tree),tree[prev + i].bytes);
+            iguana_rwbignum(1,&serialized[sizeof(*tree)],sizeof(*tree),tree[prev + i + 1].bytes);
+            tree[n + (i >> 1)] = bits256_calctxid(symbol,serialized,sizeof(serialized));
+        }
+        prev = n;
+        txn_count >>= 1;
+    }
+    return(tree[n]);
+}

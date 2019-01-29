@@ -1,0 +1,12 @@
+.vscode
+cmake-build-debug
+
+# Ignoring the Dockerfile allows us to change it without invalidating the "COPY ." step.
+/Dockerfile
+
+/target
+/mm2src/*/target
+
+/build
+/x64
+/marketmaker_depends

@@ -1,6 +1,6 @@
 
 /******************************************************************************
- * Copyright © 2014-2017 The SuperNET Developers.                             *
+ * Copyright © 2014-2018 The SuperNET Developers.                             *
  *                                                                            *
  * See the AUTHORS, DEVELOPER-AGREEMENT and LICENSE files at                  *
  * the top-level directory of this distribution for the individual copyright  *
@@ -34,15 +34,29 @@ SECP256K1_API extern const secp256k1_nonce_function secp256k1_nonce_function_rfc
 
 #define bits256_nonz(a) (((a).ulongs[0] | (a).ulongs[1] | (a).ulongs[2] | (a).ulongs[3]) != 0)
 
-#define SECP_ENSURE_CTX int32_t flag = 0; if ( ctx == 0 ) { ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY); secp256k1_pedersen_context_initialize(ctx); secp256k1_rangeproof_context_initialize(ctx); flag++; } else flag = 0; if ( ctx != 0 )
+#define SECP_ENSURE_CTX int32_t flag = 0; if ( ctx == 0 ) { ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY); flag++; } else flag = 0; if ( ctx != 0 )
 #define ENDSECP_ENSURE_CTX if ( flag != 0 ) secp256k1_context_destroy(ctx);
 
 void *bitcoin_ctx()
 {
     void *ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
-    secp256k1_pedersen_context_initialize(ctx);
-    secp256k1_rangeproof_context_initialize(ctx);
+
+    // NB, we might want to randomize the context here,
+    // cf. https://github.com/cryptocoinjs/secp256k1-node/issues/128
+
+    // NB, we're using the library linked in with https://github.com/paritytech/rust-secp256k1
+    // and it doesn't need initialization,
+    // cf. https://github.com/ElementsProject/secp256k1-zkp/issues/15#issuecomment-328290969
+
+    //secp256k1_pedersen_context_initialize(ctx);
+    //secp256k1_rangeproof_context_initialize(ctx);
+
     return(ctx);
+}
+
+void bitcoin_ctx_destroy(void* ctx)
+{
+    secp256k1_context_destroy(ctx);
 }
 
 bits256 bitcoin_pubkey33(void *ctx,uint8_t *data,bits256 privkey)
@@ -86,7 +100,7 @@ bits256 bitcoin_pub256(void *ctx,bits256 *privkeyp,uint8_t odd_even)
 int32_t bitcoin_sign(void *ctx,char *symbol,uint8_t *sig,bits256 txhash2,bits256 privkey,int32_t recoverflag)
 {
     int32_t fCompressed = 1;
-    secp256k1_ecdsa_signature SIG; void *funcp; secp256k1_ecdsa_recoverable_signature rSIG; bits256 extra_entropy,seed; uint8_t *entropy; int32_t recid,retval = -1; size_t siglen = 72; secp256k1_pubkey SECPUB,CHECKPUB;
+    secp256k1_ecdsa_signature SIG,SIGOUT; void *funcp; secp256k1_ecdsa_recoverable_signature rSIG; bits256 extra_entropy,seed; uint8_t *entropy; int32_t recid,retval = -1; size_t siglen = 72; secp256k1_pubkey SECPUB,CHECKPUB;
     seed = rand256(0);
     extra_entropy = rand256(0);
     SECP_ENSURE_CTX
@@ -94,12 +108,12 @@ int32_t bitcoin_sign(void *ctx,char *symbol,uint8_t *sig,bits256 txhash2,bits256
         funcp = secp256k1_nonce_function_rfc6979;
         if ( secp256k1_ec_seckey_verify(ctx,privkey.bytes) == 0 )
         {
-            //printf("bitcoin_sign illegal privkey\n");
+            printf("bitcoin_sign illegal privkey\n");
             return(-1);
         }
-        if ( strcmp(symbol,"BCH") == 0 || strcmp(symbol,"BTG") == 0 )
+        if ( strcmp(symbol,"BCH") == 0 || strcmp(symbol,"BTG") == 0 || strcmp(symbol,"CMM") == 0 )
         {
-            char str[65]; printf("BCH/BTG deterministic signature %s\n",bits256_str(str,txhash2));
+            //char str[65]; printf("BCH/BTG deterministic signature %s\n",bits256_str(str,txhash2));
             funcp = 0;
             entropy = 0;
         } else entropy = extra_entropy.bytes;
@@ -134,7 +148,8 @@ int32_t bitcoin_sign(void *ctx,char *symbol,uint8_t *sig,bits256 txhash2,bits256
             {
                 if ( secp256k1_ecdsa_sign(ctx,&SIG,txhash2.bytes,privkey.bytes,funcp,entropy) != 0 )
                 {
-                    if ( secp256k1_ecdsa_signature_serialize_der(ctx,sig,&siglen,&SIG) != 0 )
+                    secp256k1_ecdsa_signature_normalize(ctx,&SIGOUT,&SIG);
+                        if ( secp256k1_ecdsa_signature_serialize_der(ctx,sig,&siglen,&SIGOUT) != 0 )
                         retval = (int32_t)siglen;
                 }
             }
@@ -191,3 +206,20 @@ int32_t bitcoin_verify(void *ctx,uint8_t *sig,int32_t siglen,bits256 txhash2,uin
     }
     return(retval);
 }
+
+int32_t bitcoin_expandcompressed(void *ctx,uint8_t *bigpubkey,uint8_t *pub33)
+{
+    int32_t retval = -1; secp256k1_pubkey PUB; size_t plen = 65;
+    SECP_ENSURE_CTX
+    {
+        if ( secp256k1_ec_pubkey_parse(ctx,&PUB,pub33,33) != 0 )
+        {
+            secp256k1_ec_pubkey_serialize(ctx,bigpubkey,&plen,&PUB,SECP256K1_EC_UNCOMPRESSED);
+            retval = 0;
+        }
+        ENDSECP_ENSURE_CTX
+    }
+    return(retval);
+}
+
+
