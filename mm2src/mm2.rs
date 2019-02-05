@@ -36,11 +36,7 @@ use common::{bitcoin_priv2wif, lp, os, BitcoinCtx, CJSON, MM_VERSION};
 use common::lp::{_bits256 as bits256};
 use common::mm_ctx::MmCtx;
 
-// Re-export preserves the functions that are temporarily accessed from C during the gradual port.
-#[cfg(feature = "etomic")]
-pub use etomicrs::*;
-
-use gstuff::now_ms;
+use gstuff::{now_ms, slurp};
 
 use libc::{c_char, c_int, c_void};
 
@@ -52,7 +48,6 @@ use std::env;
 use std::ffi::{CStr, CString, OsString};
 use std::io::{self, Write};
 use std::mem::{zeroed};
-use std::net::{SocketAddr, Ipv4Addr};
 use std::process::exit;
 use std::ptr::{null};
 use std::str::from_utf8_unchecked;
@@ -116,17 +111,17 @@ fn lp_main (c_conf: CJSON, conf: Json) -> Result<(), String> {
     if conf["passphrase"].is_string() {
         let profitmargin = conf["profitmargin"].as_f64();
         unsafe {lp::LP_profitratio += profitmargin.unwrap_or (0.)};
-        let port = conf["rpcport"].as_u64().unwrap_or (lp::LP_RPCPORT as u64);
-        if port < 1000 {return ERR! ("port < 1000")}
-        if port > u16::max_value() as u64 {return ERR! ("port > u16")}
         let netid = conf["netid"].as_u64().unwrap_or (0) as u16;
         unsafe {lp::LP_ports (&mut pullport, &mut pubport, &mut busport, netid)};
-        try_s! (lp_init (port as u16, pullport, pubport, conf, c_conf));
+        try_s! (lp_init (pullport, pubport, conf, c_conf));
         Ok(())
     } else {ERR! ("!passphrase")}
 }
 
 fn help() {
+    // Removed options:
+    // "client" - In MM2 anyone can be a Maker, the "client" option is no longer applicable.
+
     pintln! (
         "Command-line options.\n"
         "The first command-line argument is special and designates the mode.\n"
@@ -147,16 +142,6 @@ fn help() {
         "                     Default is 0x2896Db79fAF20ABC8776fc27D15719cf59b8138B (Mainnet).\n"
         "                     Set 0x105aFE60fDC8B5c021092b09E8a042135A4A976E for Ropsten testnet\n"
         "  canbind        ..  If > 1000 and < 65536, initializes the `LP_fixed_pairport`.\n"
-        // I'm not quite sure what the "client mode" is, should be clarified as soon as we learn it.
-        // Does it turn Electrum-only mode on?
-        // Does it turn us into the Alice (Buyer)?
-        // Prevents us from fully joining the peer-to-peer network (by affecting `LP_canbind`)?
-        // Anything else?
-        // In MM2 we want to make the peers equal, allowing everyone to swap with everyone,
-        // the client-server model doesn't make a lot of sense then.
-        // cf. `IAMLP`, `MmCtx::am_client`.
-        // ⇒ See also the "Order Matching with Full-Relay and Non-Relay Nodes" chapter in the Komodo Whitepaper.
-        "  client         ..  '1' to use the client mode.\n"
         // We don't want to break the existing RPC API,
         // so the "refrel=coinmarketcap" designator will act as autoselect,
         // using the CoinGecko behind the scenes unless the "cmc_key" is given.
@@ -321,7 +306,7 @@ fn vanity (substring: &str) {
     let mut wifstr: [c_char; 128] = unsafe {zeroed()};
     let mut privkey: bits256 = unsafe {zeroed()};
     unsafe {lp::LP_mutex_init()};
-    let ctx = MmCtx::new (json! ({}), SocketAddr::new (Ipv4Addr::new (127, 0, 0, 1) .into(), 123));
+    let ctx = MmCtx::new (json! ({}));
     unwrap! (coins::lp_initcoins (&ctx));
     let timestamp = now_ms() / 1000;
     log! ({"start vanitygen ({}).{} t.{}", substring, substring.len(), timestamp});
@@ -345,10 +330,18 @@ fn run_lp_main (conf: &str) -> Result<(), String> {
         Ok (json) => json,
         Err (err) => return ERR! ("couldnt parse.({}).{}", conf, err)
     };
-    let conf: Json = match json::from_str(conf) {
+    let mut conf: Json = match json::from_str(conf) {
         Ok (json) => json,
         Err (err) => return ERR! ("couldnt parse.({}).{}", conf, err)
     };
+
+    if conf["coins"].is_null() {
+        let coins_from_file = slurp(&std::path::Path::new("coins"));
+        if coins_from_file.is_empty() {
+            return ERR!("No coins are set in JSON config and 'coins' file doesn't exist");
+        }
+        conf["coins"] = try_s!(json::from_slice(&coins_from_file));
+    }
 
     if conf["docker"] == 1 {
         unsafe {lp::DOCKERFLAG = 1}

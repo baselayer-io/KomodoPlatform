@@ -140,7 +140,8 @@ fn rpc_process_json(ctx: MmArc, remote_addr: SocketAddr, json: Json, c_json: CJS
         }
     }
 
-    let my_ip_ptr = try_h! (CString::new (fomat! ((ctx.rpc_ip_port.ip()))));
+    let rpc_ip_port = try_h! (ctx.rpc_ip_port());
+    let my_ip_ptr = try_h! (CString::new (fomat! ((rpc_ip_port.ip()))));
     let remote_ip_ptr = try_h! (CString::new (fomat! ((remote_addr.ip()))));
 
     let stats_result = unsafe {
@@ -151,7 +152,7 @@ fn rpc_process_json(ctx: MmArc, remote_addr: SocketAddr, json: Json, c_json: CJS
             lp::LP_mypubsock,
             c_json.0,
             remote_ip_ptr.as_ptr() as *mut c_char,
-            ctx.rpc_ip_port.port()
+            rpc_ip_port.port()
         )
     };
 
@@ -189,6 +190,7 @@ pub enum DispatcherRes {
 /// 
 /// Returns `None` if the requested "method" wasn't found among the ported RPC methods and has to be handled elsewhere.
 pub fn dispatcher (req: Json, _remote_addr: Option<SocketAddr>, ctx: MmArc) -> DispatcherRes {
+    //log! ("dispatcher] " (json::to_string (&req) .unwrap()));
     let method = match req["method"].clone() {
         Json::String (method) => method,
         _ => return DispatcherRes::NoMatch (req)
@@ -289,7 +291,8 @@ pub extern fn spawn_rpc(ctx_h: u32) {
 
     let ctx = unwrap! (MmArc::from_ffi_handle (ctx_h), "No context");
 
-    let listener = unwrap! (TcpListener::bind2 (&ctx.rpc_ip_port), "Can't bind on {}", ctx.rpc_ip_port);
+    let rpc_ip_port = unwrap! (ctx.rpc_ip_port());
+    let listener = unwrap! (TcpListener::bind2 (&rpc_ip_port), "Can't bind on {}", rpc_ip_port);
 
     let server = listener
         .incoming()
@@ -330,8 +333,9 @@ pub extern fn spawn_rpc(ctx_h: u32) {
         } else {ERR! ("on_stop callback called twice!")}
     }));
 
+    let rpc_ip_port = unwrap! (ctx.rpc_ip_port());
     CORE.spawn(move |_| {
-        log!(">>>>>>>>>> DEX stats " (ctx.rpc_ip_port.ip())":"(ctx.rpc_ip_port.port()) " \
+        log!(">>>>>>>>>> DEX stats " (rpc_ip_port.ip())":"(rpc_ip_port.port()) " \
                 DEX stats API enabled at unixtime." (gstuff::now_ms() / 1000) " <<<<<<<<<");
         server
     });

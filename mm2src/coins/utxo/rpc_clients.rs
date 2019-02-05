@@ -6,10 +6,10 @@ use common::jsonrpc_client::{JsonRpcClient, JsonRpcResponseFut, JsonRpcRequest, 
 use futures::{Async, Future, Poll, Sink, Stream};
 use futures::future::{Either, loop_fn, Loop, select_ok};
 use futures::sync::mpsc;
-use futures_timer::Delay;
-use futures_timer::FutureExt;
+use futures_timer::{Delay, Interval, FutureExt};
 use gstuff::now_ms;
 use hashbrown::HashMap;
+use hashbrown::hash_map::Entry;
 use hyper::{Body, Request, StatusCode};
 use hyper::header::{AUTHORIZATION};
 use keys::Address;
@@ -21,9 +21,10 @@ use sha2::{Sha256, Digest};
 use std::{io, thread};
 use std::fmt::Debug;
 use std::cmp::Ordering;
-use std::net::{ToSocketAddrs, SocketAddr, TcpStream as TcpStreamStd};
+use std::net::{ToSocketAddrs, SocketAddr, TcpStream as TcpStreamStd, Shutdown};
 use std::ops::Deref;
 use std::sync::{Mutex, Arc};
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::time::{Duration};
 use tokio::codec::{Encoder, Decoder};
 use tokio::net::TcpStream;
@@ -314,8 +315,9 @@ struct ElectrumUnspent {
     value: u64,
 }
 
+/// The block header compatible with Electrum 1.2
 #[derive(Debug, Deserialize)]
-pub struct ElectrumBlockHeader {
+pub struct ElectrumBlockHeaderV12 {
     bits: u64,
     block_height: u64,
     merkle_root: H256Json,
@@ -323,6 +325,29 @@ pub struct ElectrumBlockHeader {
     prev_block_hash: H256Json,
     timestamp: u64,
     version: u64,
+}
+
+/// The block header compatible with Electrum 1.4
+#[derive(Debug, Deserialize)]
+pub struct ElectrumBlockHeaderV14 {
+    height: u64,
+    hex: BytesJson,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum ElectrumBlockHeader {
+    V12(ElectrumBlockHeaderV12),
+    V14(ElectrumBlockHeaderV14),
+}
+
+impl ElectrumBlockHeader {
+    fn block_height(&self) -> u64 {
+        match self {
+            ElectrumBlockHeader::V12(h) => h.block_height,
+            ElectrumBlockHeader::V14(h) => h.height,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -354,7 +379,10 @@ pub fn spawn_electrum(
     addr_str: &str,
     arc: Arc<Mutex<HashMap<String, JsonRpcResponse>>>,
 ) -> Result<mpsc::Sender<Vec<u8>>, String> {
-    let mut addr = try_s!(addr_str.to_socket_addrs());
+    let mut addr = match addr_str.to_socket_addrs() {
+        Ok(a) => a,
+        Err(e) => return ERR!("{} error {:?}", addr_str, e),
+    };
     let addr = match addr.next() {
         Some(a) => a,
         None => return ERR!("Socket addr from addr {} is None.", addr_str),
@@ -465,7 +493,7 @@ impl UtxoRpcClientOps for ElectrumClient {
         match elem {
             Some(response) => {
                 let response: ElectrumBlockHeader = try_fus!(json::from_value(response.result.clone()));
-                Box::new(futures::future::ok(response.block_height))
+                Box::new(futures::future::ok(response.block_height()))
             },
             None => Box::new(futures::future::err(ERRL!("{} is not active", BLOCKCHAIN_HEADERS_SUB_ID)))
         }
@@ -537,8 +565,22 @@ impl ElectrumClientImpl {
     }
 
     /// https://electrumx.readthedocs.io/en/latest/protocol-methods.html#blockchain-scripthash-listunspent
+    /// It can return duplicates sometimes: https://github.com/artemii235/SuperNET/issues/269
+    /// We should remove them to build valid transactions further
     fn scripthash_list_unspent(&self, hash: &str) -> RpcRes<Vec<ElectrumUnspent>> {
-        rpc_func!(self, "blockchain.scripthash.listunspent", hash)
+        Box::new(rpc_func!(self, "blockchain.scripthash.listunspent", hash).and_then(move |unspents: Vec<ElectrumUnspent>| {
+            let mut map: HashMap<(H256Json, u32), bool> = HashMap::new();
+            let unspents = unspents.into_iter().filter(|unspent| {
+                match map.entry((unspent.tx_hash.clone(), unspent.tx_pos)) {
+                    Entry::Occupied(_) => false,
+                    Entry::Vacant(e) => {
+                        e.insert(true);
+                        true
+                    },
+                }
+            }).collect();
+            Ok(unspents)
+        }))
     }
 
     /// https://electrumx.readthedocs.io/en/latest/protocol-methods.html#blockchain-scripthash-get-history
@@ -551,6 +593,7 @@ impl ElectrumClientImpl {
         rpc_func!(self, "blockchain.scripthash.get_balance", hash)
     }
 
+    /*
     /// https://electrumx.readthedocs.io/en/latest/protocol-methods.html#blockchain-headers-subscribe
     pub fn blockchain_headers_subscribe(&self) -> RpcRes<ElectrumBlockHeader> {
         Box::new(
@@ -569,7 +612,7 @@ impl ElectrumClientImpl {
             })
         )
     }
-
+    */
     /// https://electrumx.readthedocs.io/en/latest/protocol-methods.html#blockchain-transaction-broadcast
     fn blockchain_transaction_broadcast(&self, tx: BytesJson) -> RpcRes<H256Json> {
         rpc_func!(self, "blockchain.transaction.broadcast", tx)
@@ -634,6 +677,20 @@ fn electrum_process_chunk(chunk: &[u8], arc: Arc<Mutex<HashMap<String, JsonRpcRe
     }
 }
 
+macro_rules! try_loop {
+    ($e:expr, $addr: ident, $rx: ident, $responses: ident) => {
+        match $e {
+            Ok(res) => res,
+            Err(e) => {
+                log!([$addr] " error " [e]);
+                return Box::new(futures::future::ok(Loop::Continue(($addr, $rx, $responses, 5))));
+            }
+        }
+    };
+}
+
+const ELECTRUM_TIMEOUT: u64 = 60;
+
 fn electrum_connect(
     addr: SocketAddr,
     responses: Arc<Mutex<HashMap<String, JsonRpcResponse>>>,
@@ -650,34 +707,39 @@ fn electrum_connect(
             Either::B(TcpStream::connect(&addr))
         };
         tcp.then(move |stream| -> Box<Future<Item=Loop<(), _>, Error=_> + Send> {
-            let stream = match stream {
-                Ok(s) => s,
-                Err(e) => {
-                    log!([addr] " connect error " [e]);
-                    return Box::new(futures::future::ok(Loop::Continue((addr, rx, responses, 5))));
-                },
-            };
+            let stream = try_loop!(stream, addr, rx, responses);
+            try_loop!(stream.set_nodelay(true), addr, rx, responses);
+            let stream_clone = try_loop!(stream.try_clone(), addr, rx, responses);
 
-            if let Err(e) = stream.set_nodelay(true) {
-                log!([addr] " set no delay error " [e]);
-                return Box::new(futures::future::ok(Loop::Continue((addr, rx, responses, 5))));
-            }
+            let last_chunk = Arc::new(AtomicUsize::new(now_ms() as usize / 1000));
+            let last_chunk2 = last_chunk.clone();
+            let interval = Interval::new(Duration::from_secs(ELECTRUM_TIMEOUT)).map_err(|e| { log!([e]); () });
+            CORE.spawn(move |_| {
+                interval.for_each(move |_| {
+                    let last = last_chunk.load(AtomicOrdering::Relaxed);
+                    if now_ms() / 1000 - last as u64 > ELECTRUM_TIMEOUT {
+                        log!([addr] " Didn't receive any data since " (last) ". Shutting down the connection.");
+                        if let Err(e) = stream_clone.shutdown(Shutdown::Both) {
+                            log!([addr] " error shutting down the connection " [e]);
+                        }
+                        // return err to shutdown interval execution
+                        return futures::future::err(());
+                    };
+                    futures::future::ok(())
+                })
+            });
 
             let (sink, stream) = Bytes.framed(stream).split();
-
             let send_all = SendAll::new(sink, rx);
-
             let clone = responses.clone();
             CORE.spawn(|_| {
                 stream
                     .for_each(move |chunk| {
+                        last_chunk2.store(now_ms() as usize / 1000, AtomicOrdering::Relaxed);
                         electrum_process_chunk(&chunk, clone.clone());
                         futures::future::ok(())
                     })
-                    .map_err(|e| {
-                        log!([e]);
-                        ()
-                    })
+                    .map_err(|e| { log!([e]); () })
             });
 
             Box::new(send_all.then(move |result| {
@@ -808,7 +870,7 @@ fn electrum_request(
             }
         })
         .map_err(|e| StringError(e))
-        .timeout(Duration::from_secs(10));
+        .timeout(Duration::from_secs(ELECTRUM_TIMEOUT));
 
     Box::new(send_fut.map_err(|e| ERRL!("{}", e.0)))
 }
@@ -850,7 +912,7 @@ fn electrum_subscribe(
             }
         })
         .map_err(|e| StringError(e))
-        .timeout(Duration::from_secs(10));
+        .timeout(Duration::from_secs(ELECTRUM_TIMEOUT));
 
     Box::new(send_fut.map_err(|e| ERRL!("{}", e.0)))
 }
@@ -958,18 +1020,14 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_wait_for_tx_spend_electrum() {
-        let mut client = ElectrumClient::new();
-        client.add_server("electrum1.cipig.net:10022").unwrap();
-        client.add_server("electrum2.cipig.net:10022").unwrap();
-        client.add_server("electrum3.cipig.net:10022").unwrap();
-
-        let res = client.get_transaction("f1c49150d561cae69607ae0c761d9cd6b69ca20dafa78158e8ae0b1a1c723381".into()).wait().unwrap();
-
-        let tx: UtxoTransaction = deserialize(res.hex.as_slice()).unwrap();
-        let wait = client.wait_for_payment_spend(&tx, 0, now_ms() / 1000 + 1000).unwrap();
-        log!([wait]);
+        let mut client = ElectrumClientImpl::new();
+        client.add_server("electrum1.cipig.net:10000").unwrap();
+        client.add_server("electrum2.cipig.net:10000").unwrap();
+        client.add_server("electrum3.cipig.net:10000").unwrap();
+        let client = ElectrumClient(Arc::new(client));
+        let res = client.get_transaction("2428ed3600a8823611ce11e3228189d60f1be4131e7cac2a0e6056ef456b147a".into()).wait().unwrap();
+        log!([res]);
     }
 
     #[test]

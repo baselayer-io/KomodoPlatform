@@ -28,7 +28,8 @@
 // locktime claiming on sporadic assetchains
 // there is an issue about waiting for notarization for a swap that never starts (expiration ok)
 
-use common::{coins_iter, lp, slurp_url, CJSON, MM_VERSION, os};
+use common::{coins_iter, lp, slurp_url, os, CJSON, MM_VERSION};
+use common::log::TagParam;
 use common::mm_ctx::{MmCtx, MmArc};
 use common::nn::*;
 use crc::crc32;
@@ -45,7 +46,7 @@ use std::fs;
 use std::ffi::{CStr, CString};
 use std::io::{Cursor, Read, Write};
 use std::mem::{size_of, transmute, zeroed};
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::Path;
 use std::ptr::null_mut;
 use std::str;
@@ -238,7 +239,7 @@ pub unsafe fn lp_command_process(
     c_json: CJSON,
     stats_json_only: i32,
 ) -> *mut libc::c_char {
-    let my_ip = unwrap!(CString::new(format!("{}", ctx.rpc_ip_port.ip())));
+    let my_ip = fomat!((unwrap!(ctx.rpc_ip_port()).ip()) '\0');
     if !json["result"].is_null() || !json["error"].is_null() {
         null_mut()
     } else {
@@ -1013,8 +1014,10 @@ pub unsafe fn lp_initpeers (ctx: &MmArc, pubsock: i32, mut mypeer: *mut lp::LP_p
         vec! [(format! ("5.9.253.{}", 195 + netid) .into(), true)]
     } else if netid == 0 { // Default production netid is 0.
         P2P_SEED_NODES.iter().map (|ip| (Cow::Borrowed (&ip[..]), false)) .collect()
-    } else if netid == 9999 { // MM2 testing netid is 999
+    } else if netid == 9999 { // MM2 testing netid is 9999.
         P2P_SEED_NODES_9999.iter().map (|ip| (Cow::Borrowed (&ip[..]), false)) .collect()
+    } else if netid == 9000 { // A public seed node helps NAT traversal on netid 9000.
+        vec![(Cow::Borrowed ("195.201.42.102"), false)]
     } else { // If we're using a non-default netid then we should skip adding the hardcoded seed nodes.
         Vec::new()
     };
@@ -1547,7 +1550,18 @@ pub unsafe fn lp_passphrase_init (ctx: &MmArc, passphrase: Option<&str>, gui: Op
     Ok(())
 }
 
-pub fn lp_init (myport: u16, mypullport: u16, mypubport: u16, conf: Json, c_conf: CJSON) -> Result<(), String> {
+/// Temporarily binds on the given IP and port to check if they're available.  
+/// Returns `false` if the `ip` does not belong to a connected interface or if it is already taken.
+fn test_bind (ip: IpAddr, port: u16) -> bool {
+    let bindaddr = fomat! ("tcp://" (ip) ':' (port));
+    let sock = unsafe {nn_socket (AF_SP as i32, NN_PUB as i32)};
+    let bindaddr_c = unwrap! (CString::new (&bindaddr[..]));
+    let bind_rc = unsafe {nn_bind (sock, bindaddr_c.as_ptr())};
+    unsafe {nn_close (sock)};  // 'Tis just an experiment, real bindings happen elsewhere.
+    bind_rc >= 0
+}
+
+pub fn lp_init (mypullport: u16, mypubport: u16, conf: Json, c_conf: CJSON) -> Result<(), String> {
     unsafe {lp::G.initializing = 1}  // Tells some of the spawned threads to wait till the `lp_passphrase_init` is done.
     unsafe {lp::bitcoind_RPC_inittime = 1}
     BITCOIND_RPC_INITIALIZING.store (true, Ordering::Relaxed);
@@ -1604,6 +1618,8 @@ pub fn lp_init (myport: u16, mypullport: u16, mypubport: u16, conf: Json, c_conf
     }
     unsafe {lp::LP_mutex_init()};
 
+    let ctx = MmCtx::new (conf);
+
     fn simple_ip_extractor (ip: &str) -> Result<IpAddr, String> {
         let ip = ip.trim();
         Ok (match ip.parse() {Ok (ip) => ip, Err (err) => return ERR! ("Error parsing IP address '{}': {}", ip, err)})
@@ -1620,8 +1636,8 @@ pub fn lp_init (myport: u16, mypullport: u16, mypubport: u16, conf: Json, c_conf
             },
             Err (err) => return ERR! ("Can't read from 'myipaddr': {}", err)
         }
-    } else if !conf["myipaddr"].is_null() {
-        let s = try_s! (conf["myipaddr"].as_str().ok_or ("'myipaddr' is not a string"));
+    } else if !ctx.conf["myipaddr"].is_null() {
+        let s = try_s! (ctx.conf["myipaddr"].as_str().ok_or ("'myipaddr' is not a string"));
         let ip = try_s! (simple_ip_extractor (s));
         unsafe {lp::LP_myipaddr_from_command_line = 1};
         ip
@@ -1631,11 +1647,7 @@ pub fn lp_init (myport: u16, mypullport: u16, mypubport: u16, conf: Json, c_conf
         // We're detecting the outer IP address, visible to the internet.
         // Later we'll try to *bind* on this IP address,
         // and this will break under NAT or forwarding because the internal IP address will be different.
-        // Which might be a good thing, allowing us to see a forwarding problem instead of silently not functioning.
-        // P.S. Looks like the binding currently *ignores* the "myipaddr", binding on "*" instead.
-        // TODO: I think we should fix it to bind on "myipaddr" when explicitly specified and on "*" otherwise.
-        // The automatic outer IP might help with NAT traversal, but it should NOT be affecting the `myipaddr`
-        // (manually setting the IP address to bind to and detecing the outer IP are different concerns, they should be separated).
+        // Which might be a good thing, allowing us to detect the likehoodness of NAT early.
 
         let ip_providers: [(&'static str, fn (&str) -> Result<IpAddr, String>); 2] = [
             ("http://checkip.amazonaws.com/", simple_ip_extractor),
@@ -1664,33 +1676,50 @@ pub fn lp_init (myport: u16, mypullport: u16, mypubport: u16, conf: Json, c_conf
                     continue
                 }
             };
-            match extactor (ip) {
-                Ok (ip) => break ip,
+            let ip = match extactor (ip) {
+                Ok (ip) => ip,
                 Err (err) => {
                     log! ({"lp_init] Failed to parse IP '{}' fetched from '{}': {}", ip, url, err});
                     continue
                 }
+            };
+
+            // Try to bind on this IP.
+            // If we're not behind a NAT then the bind will likely suceed.
+            // If the bind fails then emit a user-visible warning and fall back to 0.0.0.0.
+            let tags: &[&TagParam] = &[&"myipaddr"];
+            if test_bind (ip, mypubport) {
+                ctx.log.log ("🙂", tags, &fomat! (
+                    "We've detected an external IP " (ip) " and we can bind on it (port " (mypubport) "), so probably a dedicated IP."));
+                break ip
             }
+            let all_interfaces = Ipv4Addr::new (0, 0, 0, 0) .into();
+            if test_bind (all_interfaces, mypubport) {
+                ctx.log.log ("😅", tags, &fomat! (
+                    "We couldn't bind on the external IP " (ip) " (port " (mypubport) "), so NAT is likely to be present. We'll be okay though."));
+                break all_interfaces
+            }
+            let locahost = Ipv4Addr::new (127, 0, 0, 1) .into();
+            if test_bind (locahost, mypubport) {
+                ctx.log.log ("🤫", tags, &fomat! (
+                    "We couldn't bind on " (ip) " or 0.0.0.0 (port " (mypubport) "), is another MM2 instance running?"
+                    " Looks like we can bind on 127.0.0.1 as a workaround, but this is a temporary workaround so please don't tell anyone."));
+                break locahost
+            }
+            ctx.log.log ("🤒", tags, &fomat! (
+                "Couldn't bind on " (ip) ", 0.0.0.0 or 127.0.0.1 (port " (mypubport) ")."));
+            break all_interfaces  // Seems like a better default than 127.0.0.1, might still work for other ports.
         }
     };
 
-    let rpcip = if !conf["rpcip"].is_null() {
-        try_s! (conf["rpcip"].as_str().ok_or ("rpcip is not a string"))
-    } else {
-        "127.0.0.1"
-    } .to_string();
-    let ip : IpAddr = try_s!(rpcip.parse());
-    let ctx = MmCtx::new(conf, SocketAddr::new(ip, myport));
-
-    unsafe {lp::IAMLP = if ctx.am_client() {0} else {1}}
-    unsafe {lp::LP_canbind = if ctx.am_client() {0} else {1}}
+    unsafe {lp::IAMLP = 1}  // Anyone can be a Maker.
+    unsafe {lp::LP_canbind = 1}
     unsafe {lp::G.netid = ctx.conf["netid"].as_u64().unwrap_or (0) as u16}
     unsafe {lp::LP_mypubsock = -1}
 
-    if !ctx.am_client() {
-        // TODO: Use `myipaddr` when it was explicitly specified. And disentangle `myipaddr` from the detected outer IP.
-        //let subaddr = fomat! ("tcp://" (myipaddr) ':' (mypubport));
-        let bindaddr = fomat! ("tcp://*:" (mypubport));
+    if true {
+        // NB: `myipaddr` should be a bindable IP, not some NAT-outer IP.
+        let bindaddr = fomat! ("tcp://" (myipaddr) ':' (mypubport));
         unsafe {lp::LP_mypubsock = nn_socket (AF_SP as i32, NN_PUB as i32)}
         if unsafe {lp::LP_mypubsock} >= 0 {
             let bindaddr_c = try_s! (CString::new (&bindaddr[..]));
@@ -1707,7 +1736,7 @@ pub fn lp_init (myport: u16, mypullport: u16, mypubport: u16, conf: Json, c_conf
         } else {
             log! ({"error getting pubsock {}", unsafe {lp::LP_mypubsock}});
         }
-        log! ({">>>>>>>>> myipaddr.({}) pubsock.{}", bindaddr, unsafe {lp::LP_mypubsock}});
+        log! ({"lp_init] Listening on {} (LP_mypubsock {})", bindaddr, unsafe {lp::LP_mypubsock}});
         let mut mypullport = mypullport;
         let mut pushaddr: [c_char; 256] = unsafe {zeroed()};
         let myipaddr_c = try_s! (CString::new (fomat! ((myipaddr))));
@@ -1715,7 +1744,7 @@ pub fn lp_init (myport: u16, mypullport: u16, mypubport: u16, conf: Json, c_conf
             ctx.btc_ctx() as *mut c_void, &mut mypullport, pushaddr.as_mut_ptr(), myipaddr_c.as_ptr() as *mut c_char, mypullport, 0)};
     }
     try_s! (coins::lp_initcoins (&ctx));
-    unsafe {lp::RPC_port = myport}
+    unsafe {lp::RPC_port = try_s! (ctx.rpc_ip_port()) .port()}
     unsafe {lp::G.waiting = 1}
     try_s! (unsafe {safecopy! (lp::LP_myipaddr, "{}", myipaddr)});
 
@@ -1873,7 +1902,7 @@ pub fn lp_init (myport: u16, mypullport: u16, mypubport: u16, conf: Json, c_conf
     unsafe {lp::LP_QUEUE_COMMAND = Some (lp_queue_command)};
 
     let myipaddr = unsafe {lp::LP_myipaddr.as_ptr() as *mut c_char};
-    unsafe {lp::LPinit (myipaddr, myport, mypullport, mypubport, passphrase.as_ptr() as *mut c_char, c_conf.0, ctx_id)};
+    unsafe {lp::LPinit (myipaddr, mypullport, mypubport, passphrase.as_ptr() as *mut c_char, c_conf.0, ctx_id)};
     unwrap! (prices.join());
     unwrap! (trades.join());
     unwrap! (command_queue.join());

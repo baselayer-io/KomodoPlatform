@@ -155,10 +155,8 @@ void emscripten_usleep(int32_t x); // returns immediate, no sense for sleeping
 
 extern char GLOBAL_DBDIR[512];
 
-/// I Am Liquidity Provider (that is, Bob, Maker).  
-/// `0` if the command-line configuration contains the `{"client": 1}` flag; `1` otherwise.  
-/// Rust code should use the (reversed) `MmCtx::am_client` instead.  
-/// Eventually this option should go away, in MM2 we're trying not to lock the daemon into the Alice or Bob modes.
+/// This flag translates as "I Am Liquidity Provider (that is, Bob, Maker)",
+/// With MM2 all users can be a Maker, to this flag must ALWAYS be 1.
 extern int32_t IAMLP;
 
 struct iguana_msgvin
@@ -582,7 +580,7 @@ struct LP_priceinfo *LP_priceinfoadd(char *symbol);
 // Gradual port temporaries.
 
 cJSON *LP_NXT_redeems();
-void LPinit(char* myipaddr,uint16_t myport,uint16_t mypullport,uint16_t mypubport,char *passphrase,cJSON *argjson,uint32_t mm_ctx_id);
+void LPinit(char* myipaddr,uint16_t mypullport,uint16_t mypubport,char *passphrase,cJSON *argjson,uint32_t mm_ctx_id);
 void unbuffered_output_support(const char* log_path);
 void LP_dPoW_request(struct iguana_info *coin);
 struct iguana_info *LP_conflicts_find(struct iguana_info *refcoin);
@@ -704,6 +702,7 @@ struct LP_globals
 } G;
 
 extern uint32_t LP_ORDERBOOK_DURATION;
+// Corresponds to the "time expired for Alice_request" timeout failures during the SWAP. Seconds.
 extern uint32_t LP_AUTOTRADE_TIMEOUT;
 extern uint32_t LP_RESERVETIME;
 extern uint32_t Alice_expiration;
@@ -729,6 +728,7 @@ extern bits256 LP_Alicedestpubkey;
 
 cJSON *LP_quotejson(struct LP_quoteinfo *qp);
 void LP_mpnet_send(int32_t localcopy,char *msg,int32_t sendflag,char *otheraddr);
+/// Converts the DB/SWAPS/list into a JSON.
 char *LP_recent_swaps(int32_t limit,char *uuidstr);
 struct LP_address *LP_address(struct iguana_info *coin,char *coinaddr);
 int32_t LP_address_utxo_ptrs(struct iguana_info *coin,int32_t iambob,struct LP_address_utxo **utxos,int32_t max,struct LP_address *ap,char *coinaddr);

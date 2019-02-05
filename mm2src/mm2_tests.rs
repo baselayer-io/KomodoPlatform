@@ -186,7 +186,7 @@ fn test_events() {
             unwrap! (events (&["_test".into(), "events".into()]));
         },
         _ => {
-            let conf = json! ({"gui": "nogui", "client": 1, "passphrase": "123", "coins": "BTC,KMD"});
+            let conf = json! ({"gui": "nogui", "passphrase": "123", "coins": "BTC,KMD"});
             log! ("Starting the MarketMaker, similar to\n  gdb --args target/debug/mm2 '" (unwrap! (json::to_string (&conf))) "'\n  run");
             let mut mm = unwrap! (MarketMakerIt::start (
                 conf,
@@ -249,7 +249,7 @@ fn test_notify() {
         "session": 1540419658,
     })));
     assert_eq! (notify.0, StatusCode::OK, "notify reply: {:?}", notify);
-    unwrap! (mm.wait_for_log (9., &|log| log.contains ("lp_notify_recv] hailed by peer: 45.32.19.196")));
+    //unwrap! (mm.wait_for_log (9., &|log| log.contains ("lp_notify_recv] hailed by peer: 45.32.19.196")));
 }
 
 /// https://github.com/artemii235/SuperNET/issues/241
@@ -322,7 +322,6 @@ fn alice_can_see_the_active_order_after_connection() {
             "passphrase": "alice passphrase",
             "coins": coins,
             "seednode": fomat!((mm_bob.ip)),
-            "client": 1,
             "alice_contract":"0xe1d4236c5774d35dc47dcc2e5e0ccfc463a3289c",
             "bob_contract":"0x105aFE60fDC8B5c021092b09E8a042135A4A976E",
             "ethnode":"http://195.201.0.6:8545"
@@ -369,7 +368,6 @@ fn test_status() {common::log::tests::test_status()}
 fn test_peers_dht() {peers::peers_tests::test_peers_dht()}
 
 #[test]
-#[ignore]
 fn test_peers_direct_send() {peers::peers_tests::test_peers_direct_send()}
 
 #[test]
@@ -384,7 +382,6 @@ fn test_my_balance() {
             "netid": 9998,
             "myipaddr": env::var ("BOB_TRADE_IP") .ok(),
             "rpcip": env::var ("BOB_TRADE_IP") .ok(),
-            "client": 1,
             "passphrase": "bob passphrase",
             "coins": coins,
             "alice_contract":"0xe1d4236c5774d35dc47dcc2e5e0ccfc463a3289c",
@@ -430,7 +427,6 @@ fn test_check_balance_on_order_post() {
         json! ({
             "gui": "nogui",
             "netid": 9998,
-            "client": 1,
             "myipaddr": env::var ("BOB_TRADE_IP") .ok(),
             "rpcip": env::var ("BOB_TRADE_IP") .ok(),
             "canbind": env::var ("BOB_TRADE_PORT") .ok().map (|s| unwrap! (s.parse::<i64>())),
@@ -561,7 +557,7 @@ fn trade_base_rel(base: &str, rel: &str) {
     let mut mm_bob = unwrap! (MarketMakerIt::start (
         json! ({
             "gui": "nogui",
-            "netid": 9999,
+            "netid": 9000,
             "dht": "on",  // Enable DHT without delay.
             "myipaddr": env::var ("BOB_TRADE_IP") .ok(),
             "rpcip": env::var ("BOB_TRADE_IP") .ok(),
@@ -573,25 +569,33 @@ fn trade_base_rel(base: &str, rel: &str) {
         match var ("LOCAL_THREAD_MM") {Ok (ref e) if e == "bob" => Some (local_start()), _ => None}
     ));
 
+    let (_bob_dump_log, _bob_dump_dashboard) = mm_dump (&mm_bob.log_path);
+    log!({"Bob log path: {}", mm_bob.log_path.display()});
+
+    // Both Alice and Bob might try to bind on the "0.0.0.0:47773" DHT port in this test
+    // (because the local "127.0.0.*:47773" addresses aren't that useful for DHT).
+    // We want to give Bob a headstart in acquiring the port,
+    // because Alice will then be able to directly reach it (thanks to "seednode").
+    // Direct communication is not required in this test, but it's nice to have.
+    // The port differs for another netid, should be 43804 for 9000
+    unwrap! (mm_bob.wait_for_log (9., &|log| log.contains ("preferred port 43804 drill true")));
+
     let mut mm_alice = unwrap! (MarketMakerIt::start (
         json! ({
             "gui": "nogui",
-            "netid": 9999,
+            "netid": 9000,
             "dht": "on",  // Enable DHT without delay.
             "myipaddr": env::var ("ALICE_TRADE_IP") .ok(),
             "rpcip": env::var ("ALICE_TRADE_IP") .ok(),
             "passphrase": alice_passphrase,
             "coins": coins,
-            "seednode": fomat!((mm_bob.ip)),
-            "client": 1,
+            // We're using the open (non-NAT) netid 9000 seed instead, 195.201.42.102 // "seednode": fomat!((mm_bob.ip))
         }),
         alice_userpass,
         match var ("LOCAL_THREAD_MM") {Ok (ref e) if e == "alice" => Some (local_start()), _ => None}
     ));
 
-    let (_bob_dump_log, _bob_dump_dashboard) = mm_dump (&mm_bob.log_path);
     let (_alice_dump_log, _alice_dump_dashboard) = mm_dump (&mm_alice.log_path);
-    log!({"Bob log path: {}", mm_bob.log_path.display()});
     log!({"Alice log path: {}", mm_alice.log_path.display()});
 
     // wait until both nodes RPC API is active
@@ -603,8 +607,10 @@ fn trade_base_rel(base: &str, rel: &str) {
     // Enable coins on Alice side. Print the replies in case we need the "smartaddress".
     log! ({"enable_coins (alice): {:?}", enable_coins (&mm_alice)});
 
-    // wait until Alice recognize Bob node by importing it's pubkey
-    unwrap! (mm_alice.wait_for_log (33., &|log| log.contains ("set pubkey for")));
+    // Both the Taker and the Maker should connect to the netid 9000 open (non-NAT) seed node.
+    // NB: Long wayt as there might be delays in the seed node from us reusing the 127.0.0.* IPs with different keys.
+    unwrap! (mm_bob.wait_for_log (999., &|log| log.contains ("set pubkey for ")));
+    unwrap! (mm_alice.wait_for_log (99., &|log| log.contains ("set pubkey for ")));
 
     // issue sell request on Bob side by setting base/rel price
     log!("Issue bob sell request");
@@ -631,7 +637,7 @@ fn trade_base_rel(base: &str, rel: &str) {
     assert! (rc.0.is_success(), "!buy: {}", rc.1);
 
     // ensure the swap started
-    unwrap! (mm_alice.wait_for_log (20., &|log| log.contains ("Entering the taker_swap_loop")));
+    unwrap! (mm_alice.wait_for_log (99., &|log| log.contains ("Entering the taker_swap_loop")));
     unwrap! (mm_bob.wait_for_log (20., &|log| log.contains ("Entering the maker_swap_loop")));
 
     // wait for swap to complete on both sides
