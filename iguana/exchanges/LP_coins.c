@@ -368,6 +368,7 @@ struct iguana_info *LP_coinadd(struct iguana_info *cdata)
     portable_mutex_init(&coin->txmutex);
     portable_mutex_init(&coin->addrmutex);
     portable_mutex_init(&coin->addressutxo_mutex);
+    portable_mutex_init(&coin->tx_history_mutex);
     portable_mutex_lock(&LP_coinmutex);
     HASH_ADD_KEYPTR(hh,LP_coins,coin->symbol,strlen(coin->symbol),coin);
     portable_mutex_unlock(&LP_coinmutex);
@@ -384,9 +385,6 @@ uint16_t LP_coininit(struct iguana_info *coin,char *symbol,char *name,char *asse
     char *name2; uint16_t origport = port;
     memset(coin,0,sizeof(*coin));
     safecopy(coin->symbol,symbol,sizeof(coin->symbol));
-    if ( strcmp(symbol,"PART") == 0 )
-        coin->txversion = 160;
-    else coin->txversion = txversion;
     coin->updaterate = (uint32_t)time(NULL);
     coin->isPoS = isPoS;
     coin->taddr = taddr;
@@ -422,7 +420,7 @@ uint16_t LP_coininit(struct iguana_info *coin,char *symbol,char *name,char *asse
     sprintf(coin->serverport,"127.0.0.1:%u",port);
     if ( port != origport )
         printf("set curl path for %s to %s\n",symbol,coin->serverport);
-    if ( strcmp(symbol,"KMD") == 0 || coin->isassetchain != 0 || taddr != 0 )
+    if ( strcmp(symbol,"KMD") == 0 || strcmp(symbol,"BEER") == 0 || strcmp(symbol,"PIZZA") == 0 || coin->isassetchain != 0 || taddr != 0 )
         coin->zcash = LP_IS_ZCASHPROTOCOL;
     else if ( strcmp(symbol,"BCH") == 0 )
     {
@@ -442,6 +440,15 @@ uint16_t LP_coininit(struct iguana_info *coin,char *symbol,char *name,char *asse
     coin->curl_handle = curl_easy_init();
     portable_mutex_init(&coin->curl_mutex);
     coin->decimals = decimals;
+    if ( strcmp(symbol,"PART") == 0 ) {
+        coin->txversion = 160;
+    } else if ( coin->isassetchain != 0 && strcmp(symbol,"OOT") != 0 && strcmp(symbol,"ZILLA") != 0 ) {
+        coin->txversion = 4;
+    } else if ( strcmp(name,"BEER") == 0 || strcmp("PIZZA",name) == 0 || strcmp("KMD",name) == 0 ) {
+        coin->txversion = 4;
+    } else {
+        coin->txversion = txversion;
+    }
     return(port);
 }
 
@@ -457,7 +464,7 @@ int32_t LP_isdisabled(char *base,char *rel)
 
 struct iguana_info *LP_coinfind(char *symbol)
 {
-    struct iguana_info *coin,cdata; int32_t isinactive,isPoS,longestchain = 1; uint16_t port,busport; uint64_t txfee; double estimatedrate; uint8_t pubtype,p2shtype,wiftype; char *name,*assetname;
+    struct iguana_info *coin,cdata; int32_t txversion=0,isinactive,isPoS,longestchain = 1; uint16_t port,busport; uint64_t txfee; double estimatedrate; uint8_t pubtype,p2shtype,wiftype; char *name,*assetname;
     if ( symbol == 0 || symbol[0] == 0 )
         return(0);
     if ( (coin= LP_coinsearch(symbol)) != 0 )
@@ -483,9 +490,12 @@ struct iguana_info *LP_coinfind(char *symbol)
         name = "bitcoin";
     }
     else if ( strcmp(symbol,"KMD") == 0 )
+    {
         name = "komodo";
+        txversion = 4;
+    }
     else return(0);
-    port = LP_coininit(&cdata,symbol,name,assetname,isPoS,port,pubtype,p2shtype,wiftype,txfee,estimatedrate,longestchain,0,0,busport,0,0,0);
+    port = LP_coininit(&cdata,symbol,name,assetname,isPoS,port,pubtype,p2shtype,wiftype,txfee,estimatedrate,longestchain,0,0,busport,0,0,txversion);
     if ( port == 0 )
         isinactive = 1;
     else isinactive = 0;
